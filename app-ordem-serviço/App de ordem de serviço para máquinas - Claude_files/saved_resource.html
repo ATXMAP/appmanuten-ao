@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<!-- saved from url=(0012)about:srcdoc -->
+<html lang="pt-BR"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.13/html-to-image.min.js" integrity="sha512-iZ2ORl595Wx6miw+GuadDet4WQbdSWS3JLMoNfY8cRGoEFy6oT3G9IbcrBeL6AfkgpA51ETt/faX6yLV+/gFJg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script>
+      (function() {
+        const originalConsole = window.console;
+        window.console = {
+          log: (...args) => {
+            originalConsole.log(...args);
+            window.parent.postMessage({ type: 'console', message: args.join(' ') }, '*');
+          },
+          error: (...args) => {
+            originalConsole.error(...args);
+            window.parent.postMessage({ type: 'console', message: 'Error: ' + args.join(' ') }, '*');
+          },
+          warn: (...args) => {
+            originalConsole.warn(...args);
+            window.parent.postMessage({ type: 'console', message: 'Warning: ' + args.join(' ') }, '*');
+          }
+        };
+
+        let requestId = 0;
+        let callbacksMap = new Map();
+        let streamControllers = new Map();
+        
+        window.claude = {
+          complete: (prompt) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'claudeComplete', id, prompt }, '*');
+            });
+          }
+        };
+
+        window.storage = {
+          get: (key, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageGet', id, key, shared }, '*');
+            });
+          },
+          set: (key, value, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageSet', id, key, value, shared }, '*');
+            });
+          },
+          delete: (key, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageDelete', id, key, shared }, '*');
+            });
+          },
+          list: (prefix, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageList', id, prefix, shared }, '*');
+            });
+          }
+        };
+
+        let pendingBlobs = new Map();
+        URL.createObjectURL = (blob) => {
+          // Store the blob and create an ID and URL for it
+          const blobId = `blob-${Date.now()}-${Math.random()}`;
+          pendingBlobs.set(blobId, blob);
+          return `blob-request://${blobId}`;
+        };
+
+        URL.revokeObjectURL = (url) => {
+          // Remove the blob from our store
+          const blobId = url.replace("blob-request://", "");
+          pendingBlobs.delete(blobId);
+        };
+
+        const getBlobFromURL = (url) => {
+          const blobId = url.replace("blob-request://", "");
+          return pendingBlobs.get(blobId);
+        };
+
+        // Override global fetch with streaming support
+        window.fetch = (url, init = {}) => {
+          return new Promise((resolve, reject) => {
+            const id = requestId++;
+            const channelId = `fetch-${id}-${Date.now()}`;
+            
+            callbacksMap.set(id, { 
+              resolve: (response) => {
+                // Create a ReadableStream for the response body
+                const stream = new ReadableStream({
+                  start(controller) {
+                    streamControllers.set(channelId, controller);
+                  },
+                  cancel() {
+                    streamControllers.delete(channelId);
+                  }
+                });
+                
+                // Create and return the Response with the stream
+                resolve(new Response(stream, {
+                  status: response.status,
+                  statusText: response.statusText,
+                  headers: response.headers
+                }));
+              },
+              reject,
+              channelId
+            });
+            
+            window.parent.postMessage({
+              type: 'proxyFetch',
+              id,
+              url,
+              init,
+              channelId
+            }, '*');
+          });
+        };
+
+        window.addEventListener('message', async (event) => {
+          if (event.data.type === 'takeScreenshot') {
+            const rootElement = document.getElementById('artifacts-component-root-html');
+            if (!rootElement) {
+              window.parent.postMessage({
+                type: 'screenshotError',
+                error: new Error('Root element not found'),
+              }, '*');
+            }
+            const screenshot = await htmlToImage.toPng(rootElement, {
+              imagePlaceholder:
+                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAAAA1JREFUGFdjePDgwX8ACOQDoNsk0PMAAAAASUVORK5CYII=",
+            });
+            window.parent.postMessage({
+              type: 'screenshotData',
+              data: screenshot,
+            }, '*');
+          } else if (event.data.type === 'claudeComplete') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.completion);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'proxyFetchResponse') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+              callbacksMap.delete(event.data.id);
+            } else {
+              // Initial response with headers, status, etc.
+              callback.resolve({
+                status: event.data.status,
+                statusText: event.data.statusText,
+                headers: event.data.headers
+              });
+              // Don't delete the callback yet if streaming
+              if (!event.data.body) {
+                callbacksMap.delete(event.data.id);
+              }
+            }
+          } else if (event.data.type === 'proxyFetchStream') {
+            // Handle streaming data chunks
+            const controller = streamControllers.get(event.data.channelId);
+            if (controller) {
+              if (event.data.error) {
+                controller.error(new Error(event.data.error));
+                streamControllers.delete(event.data.channelId);
+              } else if (event.data.done) {
+                controller.close();
+                streamControllers.delete(event.data.channelId);
+                // Clean up the callback
+                const callback = Array.from(callbacksMap.entries()).find(
+                  ([_, value]) => value.channelId === event.data.channelId
+                );
+                if (callback) {
+                  callbacksMap.delete(callback[0]);
+                }
+              } else if (event.data.chunk) {
+                controller.enqueue(new Uint8Array(event.data.chunk));
+              }
+            }
+          } else if (event.data.type === 'storageGet') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageSet') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageDelete') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageList') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          }
+        });
+
+        window.addEventListener('click', (event) => {
+          const isEl = event.target instanceof HTMLElement;
+          if (!isEl) return;
+    
+          // find ancestor links
+          const linkEl = event.target.closest("a");
+          if (!linkEl || !linkEl.href) return;
+    
+          event.preventDefault();
+          event.stopImmediatePropagation();
+    
+          if (linkEl.href.startsWith("blob-request:")) {
+            const blob = getBlobFromURL(linkEl.href);
+            if (!blob) return;
+            void blob.arrayBuffer().then((data) => {
+              window.parent.postMessage({
+                type: "downloadFile",
+                filename: linkEl.download,
+                data,
+                mimeType: blob.type || "application/octet-stream",
+              });
+            });
+          } else if (linkEl.href.startsWith("data:")) {
+            const [header, base64Data] = linkEl.href.split(",");
+            const mimeMatch = header.match(/data:([^;]+)/);
+            const mimeType = mimeMatch ? mimeMatch[1] : "application/octet-stream";
+            const binaryString = atob(base64Data);
+            const data = Uint8Array.from(binaryString, (c) =>
+              c.charCodeAt(0),
+            ).buffer;
+            window.parent.postMessage({
+              type: "downloadFile",
+              filename: linkEl.download,
+              data,
+              mimeType,
+            });
+          } else {
+            let linkUrl;
+            try {
+              linkUrl = new URL(linkEl.href);
+            } catch (error) {
+              return;
+            }
+    
+            if (linkUrl.hostname === window.location.hostname) return;
+      
+            window.parent.postMessage({
+              type: 'openExternal',
+              href: linkEl.href,
+            }, '*');
+          }
+      });
+
+        const originalOpen = window.open;
+        window.open = function (url) {
+          window.parent.postMessage({
+            type: "openExternal",
+            href: url,
+          }, "*");
+        };
+
+        window.addEventListener('error', (event) => {
+          window.parent.postMessage({ type: 'console', message: 'Uncaught Error: ' + event.message }, '*');
+        });
+      })();
+    </script>
+  
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ordem de Serviço</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            background: #f0f0f0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        header {
+            background: #2563eb;
+            color: white;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        header h1 {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .btn-blue {
+            background: #2563eb;
+            color: white;
+        }
+        .btn-blue:hover {
+            background: #1d4ed8;
+        }
+        .btn-green {
+            background: #16a34a;
+            color: white;
+        }
+        .btn-green:hover {
+            background: #15803d;
+        }
+        .btn-red {
+            background: #dc2626;
+            color: white;
+        }
+        .btn-red:hover {
+            background: #b91c1c;
+        }
+        .login-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+        }
+        .login-box {
+            background: white;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            width: 100%;
+            max-width: 400px;
+        }
+        .login-box h1 {
+            text-align: center;
+            color: #2563eb;
+            margin-bottom: 30px;
+            font-size: 28px;
+        }
+        input, select, textarea {
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            font-family: Arial, sans-serif;
+        }
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #2563eb;
+            box-shadow: 0 0 5px rgba(37, 99, 235, 0.5);
+        }
+        main {
+            padding: 20px;
+        }
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .card h2 {
+            color: #1f2937;
+            margin-bottom: 15px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+        .order-item {
+            border-left: 4px solid #fbbf24;
+            background: #fffbeb;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        .order-item strong {
+            color: #1f2937;
+        }
+        .order-item p {
+            margin: 5px 0;
+        }
+        .machine-item {
+            background: #f3f4f6;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .alert {
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+        }
+        .alert-success {
+            background: #d1fae5;
+            color: #065f46;
+            border-left: 4px solid #10b981;
+        }
+        .alert-error {
+            background: #fee2e2;
+            color: #991b1b;
+            border-left: 4px solid #dc2626;
+        }
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body id="artifacts-component-root-html">
+    <div id="app">
+                <div class="login-container">
+                    <div class="login-box">
+                        <h1>📋 Ordem de Serviço</h1>
+                        <input type="text" id="userName" placeholder="Digite seu nome" value="">
+                        <select id="loginRole">
+                            <option value="">Selecione seu tipo...</option>
+                            <option value="operador">👷 Operador</option>
+                            <option value="admin">🔧 Administrador</option>
+                            <option value="manutencao">🛠️ Manutenção</option>
+                        </select>
+                        <button class="btn-blue" style="width: 100%; margin-top: 20px;" onclick="handleLogin()">Entrar</button>
+                    </div>
+                </div>
+            </div>
+
+    <script>
+        // Estado global da aplicação
+        const app = {
+            userRole: null,
+            userName: '',
+            machines: JSON.parse(localStorage.getItem('machines') || '[]'),
+            orders: JSON.parse(localStorage.getItem('orders') || '[]'),
+            loginRole: '',
+            machineForm: { name: '', model: '', location: '' },
+            orderForm: { machineId: '', problem: '', operatorName: '' }
+        };
+
+        // Função para renderizar a tela
+        function render() {
+            const appDiv = document.getElementById('app');
+            
+            if (!app.userRole) {
+                appDiv.innerHTML = renderLogin();
+            } else if (app.userRole === 'operador') {
+                appDiv.innerHTML = renderOperador();
+            } else if (app.userRole === 'admin') {
+                appDiv.innerHTML = renderAdmin();
+            } else if (app.userRole === 'manutencao') {
+                appDiv.innerHTML = renderManutencao();
+            }
+            
+            attachEventListeners();
+        }
+
+        // TELA DE LOGIN
+        function renderLogin() {
+            return `
+                <div class="login-container">
+                    <div class="login-box">
+                        <h1>📋 Ordem de Serviço</h1>
+                        <input type="text" id="userName" placeholder="Digite seu nome" value="${app.userName}">
+                        <select id="loginRole">
+                            <option value="">Selecione seu tipo...</option>
+                            <option value="operador">👷 Operador</option>
+                            <option value="admin">🔧 Administrador</option>
+                            <option value="manutencao">🛠️ Manutenção</option>
+                        </select>
+                        <button class="btn-blue" style="width: 100%; margin-top: 20px;" onclick="handleLogin()">Entrar</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        // TELA DO OPERADOR
+        function renderOperador() {
+            return `
+                <div>
+                    <header>
+                        <h1>
+                            <span>👷 Operador: ${app.userName}</span>
+                            <button class="btn-red" onclick="handleLogout()">Sair</button>
+                        </h1>
+                    </header>
+                    <main class="container">
+                        <div class="card">
+                            <h2>📝 Abrir Ordem de Serviço</h2>
+                            <div class="grid">
+                                <input type="text" id="operatorName" placeholder="Seu nome" value="${app.orderForm.operatorName}">
+                                <select id="machineId">
+                                    <option value="">Selecione a máquina...</option>
+                                    ${app.machines.map(m => `<option value="${m.id}">${m.name} (${m.model})</option>`).join('')}
+                                </select>
+                            </div>
+                            <textarea id="problem" placeholder="Descreva o problema..." style="margin: 10px 0;"></textarea>
+                            <button class="btn-green" style="width: 100%;" onclick="handleOpenOrder()">➕ Abrir Ordem de Serviço</button>
+                        </div>
+                        <div class="card">
+                            <h2>📋 Minhas Ordens</h2>
+                            ${app.orders.length === 0 ? '<p>Nenhuma ordem aberta</p>' : 
+                                app.orders.map(o => `
+                                    <div class="order-item">
+                                        <p><strong>Máquina:</strong> ${o.machineName}</p>
+                                        <p><strong>Problema:</strong> ${o.problem}</p>
+                                        <p><small>${o.date} às ${o.time}</small></p>
+                                    </div>
+                                `).join('')
+                            }
+                        </div>
+                    </main>
+                </div>
+            `;
+        }
+
+        // TELA DO ADMIN
+        function renderAdmin() {
+            return `
+                <div>
+                    <header>
+                        <h1>
+                            <span>🔧 Admin: ${app.userName}</span>
+                            <button class="btn-red" onclick="handleLogout()">Sair</button>
+                        </h1>
+                    </header>
+                    <main class="container">
+                        <div class="card">
+                            <h2>➕ Cadastrar Máquina</h2>
+                            <div class="grid">
+                                <input type="text" id="machineName" placeholder="Nome da Máquina" value="${app.machineForm.name}">
+                                <input type="text" id="machineModel" placeholder="Modelo" value="${app.machineForm.model}">
+                                <input type="text" id="machineLocation" placeholder="Localização" value="${app.machineForm.location}">
+                            </div>
+                            <button class="btn-blue" style="width: 100%; margin-top: 10px;" onclick="handleAddMachine()">➕ Cadastrar Máquina</button>
+                        </div>
+                        <div class="card">
+                            <h2>🏭 Máquinas Cadastradas (${app.machines.length})</h2>
+                            ${app.machines.length === 0 ? '<p>Nenhuma máquina</p>' : 
+                                app.machines.map(m => `
+                                    <div class="machine-item">
+                                        <div>
+                                            <p><strong>${m.name}</strong></p>
+                                            <p style="color: #666; font-size: 12px;">${m.model} - ${m.location}</p>
+                                        </div>
+                                        <button class="btn-red" onclick="handleDeleteMachine(${m.id})">🗑️</button>
+                                    </div>
+                                `).join('')
+                            }
+                        </div>
+                        <div class="card">
+                            <h2>📊 Ordens Abertas (${app.orders.length})</h2>
+                            ${app.orders.length === 0 ? '<p>Nenhuma ordem</p>' : 
+                                app.orders.map(o => `
+                                    <div class="order-item">
+                                        <p><strong>Operador:</strong> ${o.operatorName}</p>
+                                        <p><strong>Máquina:</strong> ${o.machineName}</p>
+                                        <p><strong>Problema:</strong> ${o.problem}</p>
+                                        <p><small>${o.date} às ${o.time}</small></p>
+                                    </div>
+                                `).join('')
+                            }
+                        </div>
+                    </main>
+                </div>
+            `;
+        }
+
+        // TELA DA MANUTENÇÃO
+        function renderManutencao() {
+            return `
+                <div>
+                    <header>
+                        <h1>
+                            <span>🛠️ Manutenção: ${app.userName}</span>
+                            <button class="btn-red" onclick="handleLogout()">Sair</button>
+                        </h1>
+                    </header>
+                    <main class="container">
+                        <div class="card">
+                            <h2>📋 Ordens Abertas (${app.orders.length})</h2>
+                            ${app.orders.length === 0 ? '<p>Nenhuma ordem para manutenção</p>' : 
+                                app.orders.map((o, idx) => `
+                                    <div class="order-item" style="border-left-color: #ef4444; background: #fee2e2;">
+                                        <p><strong>Operador:</strong> ${o.operatorName}</p>
+                                        <p><strong>Máquina:</strong> ${o.machineName}</p>
+                                        <p><strong>Local:</strong> ${o.location}</p>
+                                        <p><strong>Problema:</strong> ${o.problem}</p>
+                                        <p><small>${o.date} às ${o.time}</small></p>
+                                        <button class="btn-green" style="margin-top: 10px; width: 100%;" onclick="handleCompleteOrder(${idx})">✅ Manutenção Concluída</button>
+                                    </div>
+                                `).join('')
+                            }
+                        </div>
+                    </main>
+                </div>
+            `;
+        }
+
+        // Funções de manipulação
+        function handleLogin() {
+            app.userName = document.getElementById('userName').value;
+            app.loginRole = document.getElementById('loginRole').value;
+            
+            if (app.userName.trim() && app.loginRole) {
+                app.userRole = app.loginRole;
+                render();
+            } else {
+                alert('❌ Preencha todos os campos!');
+            }
+        }
+
+        function handleLogout() {
+            app.userRole = null;
+            app.userName = '';
+            app.loginRole = '';
+            render();
+        }
+
+        function handleAddMachine() {
+            const name = document.getElementById('machineName').value;
+            const model = document.getElementById('machineModel').value;
+            const location = document.getElementById('machineLocation').value;
+            
+            if (name && model) {
+                const newMachine = {
+                    id: Date.now(),
+                    name,
+                    model,
+                    location,
+                    createdAt: new Date().toLocaleDateString('pt-BR')
+                };
+                app.machines.push(newMachine);
+                localStorage.setItem('machines', JSON.stringify(app.machines));
+                
+                app.machineForm = { name: '', model: '', location: '' };
+                alert('✅ Máquina cadastrada com sucesso!');
+                render();
+            } else {
+                alert('❌ Preencha nome e modelo!');
+            }
+        }
+
+        function handleDeleteMachine(id) {
+            app.machines = app.machines.filter(m => m.id !== id);
+            localStorage.setItem('machines', JSON.stringify(app.machines));
+            render();
+        }
+
+        function handleOpenOrder() {
+            const machineId = document.getElementById('machineId').value;
+            const operatorName = document.getElementById('operatorName').value;
+            const problem = document.getElementById('problem').value;
+            
+            if (!machineId || !operatorName || !problem) {
+                alert('❌ Preencha todos os campos!');
+                return;
+            }
+            
+            const machine = app.machines.find(m => m.id == machineId);
+            const newOrder = {
+                id: Date.now(),
+                operatorName,
+                machineName: machine.name,
+                machineModel: machine.model,
+                location: machine.location,
+                problem,
+                date: new Date().toLocaleDateString('pt-BR'),
+                time: new Date().toLocaleTimeString('pt-BR'),
+                status: 'aberta'
+            };
+            
+            app.orders.push(newOrder);
+            localStorage.setItem('orders', JSON.stringify(app.orders));
+            
+            app.orderForm = { machineId: '', problem: '', operatorName: '' };
+            alert('✅ Ordem de serviço aberta! Manutenção será notificada.');
+            render();
+        }
+
+        function handleCompleteOrder(idx) {
+            app.orders.splice(idx, 1);
+            localStorage.setItem('orders', JSON.stringify(app.orders));
+            alert('✅ Manutenção concluída!');
+            render();
+        }
+
+        function attachEventListeners() {
+            // Listeners serão adicionados pelo onclick direto no HTML
+        }
+
+        // Renderizar inicial
+        render();
+    </script>
+
+</body></html>

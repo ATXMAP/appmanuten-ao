@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ordem de Serviço</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>">
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="module">
+        const { useState, useEffect } = React;
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+
+        function ServiceOrderApp() {
+            const [userRole, setUserRole] = useState(null);
+            const [userName, setUserName] = useState('');
+            const [machines, setMachines] = useState([]);
+            const [orders, setOrders] = useState([]);
+            const [showLoginForm, setShowLoginForm] = useState(true);
+            const [loginRole, setLoginRole] = useState('');
+            const [machineForm, setMachineForm] = useState({ name: '', model: '', location: '' });
+            const [orderForm, setOrderForm] = useState({
+                machineId: '',
+                problem: '',
+                operatorName: '',
+                photo: null,
+                photoPreview: null
+            });
+
+            useEffect(() => {
+                try {
+                    const savedMachines = localStorage.getItem('machines');
+                    const savedOrders = localStorage.getItem('orders');
+                    if (savedMachines) setMachines(JSON.parse(savedMachines));
+                    if (savedOrders) setOrders(JSON.parse(savedOrders));
+                } catch (e) {
+                    console.log('Erro ao carregar dados');
+                }
+            }, []);
+
+            useEffect(() => {
+                try {
+                    localStorage.setItem('machines', JSON.stringify(machines));
+                } catch (e) {
+                    console.log('Erro ao salvar máquinas');
+                }
+            }, [machines]);
+
+            useEffect(() => {
+                try {
+                    localStorage.setItem('orders', JSON.stringify(orders));
+                } catch (e) {
+                    console.log('Erro ao salvar ordens');
+                }
+            }, [orders]);
+
+            const handleLogin = () => {
+                if (userName.trim() && loginRole) {
+                    setUserRole(loginRole);
+                    setShowLoginForm(false);
+                }
+            };
+
+            const handleLogout = () => {
+                setUserRole(null);
+                setShowLoginForm(true);
+                setUserName('');
+                setLoginRole('');
+            };
+
+            const addMachine = () => {
+                if (machineForm.name && machineForm.model) {
+                    const newMachine = {
+                        id: Date.now(),
+                        ...machineForm,
+                        createdAt: new Date().toLocaleDateString('pt-BR')
+                    };
+                    setMachines([...machines, newMachine]);
+                    setMachineForm({ name: '', model: '', location: '' });
+                    alert('✅ Máquina cadastrada!');
+                }
+            };
+
+            const openServiceOrder = () => {
+                if (orderForm.machineId && orderForm.problem && orderForm.operatorName) {
+                    const machine = machines.find(m => m.id == orderForm.machineId);
+                    const newOrder = {
+                        id: Date.now(),
+                        operatorName: orderForm.operatorName,
+                        machineName: machine.name,
+                        machineModel: machine.model,
+                        location: machine.location,
+                        problem: orderForm.problem,
+                        photo: orderForm.photo,
+                        date: new Date().toLocaleDateString('pt-BR'),
+                        time: new Date().toLocaleTimeString('pt-BR'),
+                        status: 'aberta',
+                        maintenanceViewed: false,
+                        completedDate: null,
+                        completedTime: null,
+                        completedBy: null,
+                        completionNotes: null,
+                        completionPhoto: null
+                    };
+                    setOrders([...orders, newOrder]);
+                    setOrderForm({ machineId: '', problem: '', operatorName: '', photo: null, photoPreview: null });
+                    alert('✅ Ordem aberta!');
+                }
+            };
+
+            const deleteMachine = (machineId) => {
+                setMachines(machines.filter(m => m.id !== machineId));
+            };
+
+            const deleteOrder = (orderId) => {
+                setOrders(orders.filter(o => o.id !== orderId));
+            };
+
+            const handlePhotoCapture = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        setOrderForm({
+                            ...orderForm,
+                            photo: reader.result,
+                            photoPreview: reader.result
+                        });
+                    };
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            // TELA DE LOGIN
+            if (showLoginForm) {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-blue-600 to-blue-800 flex items-center justify-center p-4">
+                        <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-md">
+                            <h1 className="text-3xl font-bold text-center text-blue-600 mb-8">📋 Ordem de Serviço</h1>
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">Seu Nome</label>
+                                    <input type="text" value={userName} onChange={(e) => setUserName(e.target.value)} placeholder="Digite seu nome" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">Tipo de Acesso</label>
+                                    <select value={loginRole} onChange={(e) => setLoginRole(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+                                        <option value="">Selecione...</option>
+                                        <option value="operador">👷 Operador</option>
+                                        <option value="admin">🔧 Administrador</option>
+                                        <option value="manutencao">🛠️ Manutenção</option>
+                                    </select>
+                                </div>
+                                <button onClick={handleLogin} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-lg transition">Entrar</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            // TELA DO OPERADOR
+            if (userRole === 'operador') {
+                return (
+                    <div className="min-h-screen bg-gray-100">
+                        <header className="bg-blue-600 text-white p-4 shadow-lg">
+                            <div className="max-w-6xl mx-auto flex justify-between items-center">
+                                <h1 className="text-2xl font-bold">👷 Operador: {userName}</h1>
+                                <button onClick={handleLogout} className="bg-red-500 hover:bg-red-600 px-4 py-2 rounded-lg">Sair</button>
+                            </div>
+                        </header>
+                        <main className="max-w-6xl mx-auto p-4">
+                            <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+                                <h2 className="text-2xl font-bold text-gray-800 mb-6">📝 Abrir Ordem de Serviço</h2>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">Máquina</label>
+                                        <select value={orderForm.machineId} onChange={(e) => setOrderForm({ ...orderForm, machineId: e.target.value })} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+                                            <option value="">Selecione a máquina...</option>
+                                            {machines.map(m => <option key={m.id} value={m.id}>{m.name} ({m.model})</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">Seu Nome</label>
+                                        <input type="text" value={orderForm.operatorName} onChange={(e) => setOrderForm({ ...orderForm, operatorName: e.target.value })} placeholder="Digite seu nome" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                    </div>
+                                    <div className="md:col-span-2">
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">Descrição do Problema</label>
+                                        <textarea value={orderForm.problem} onChange={(e) => setOrderForm({ ...orderForm, problem: e.target.value })} placeholder="Descreva o problema..." rows="4" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" />
+                                    </div>
+                                    <div className="md:col-span-2">
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">📸 Foto (Opcional)</label>
+                                        <label className="flex items-center justify-center px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg cursor-pointer">
+                                            📷 Tirar Foto
+                                            <input type="file" accept="image/*" onChange={handlePhotoCapture} className="hidden" />
+                                        </label>
+                                    </div>
+                                </div>
+                                <button onClick={openServiceOrder} className="mt-4 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-lg w-full">➕ Abrir Ordem</button>
+                            </div>
+                            <div className="bg-white rounded-lg shadow-lg p-6">
+                                <h2 className="text-xl font-bold text-gray-800 mb-4">📋 Minhas Ordens</h2>
+                                {orders.filter(o => o.operatorName === orderForm.operatorName).length === 0 ? <p className="text-gray-500">Nenhuma ordem</p> :
+                                    <div className="space-y-4">{orders.filter(o => o.operatorName === orderForm.operatorName).map(o => <div key={o.id} className="border-l-4 border-blue-500 pl-4 py-2 bg-blue-50 rounded"><p><strong>{o.machineName}</strong></p><p className="text-sm text-gray-600">{o.date} às {o.time}</p></div>)}</div>
+                                }
+                            </div>
+                        </main>
+                    </div>
+                );
+            }
+
+            // TELA DO ADMIN
+            if (userRole === 'admin') {
+                return (
+                    <div className="min-h-screen bg-gray-100">
+                        <header className="bg-blue-600 text-white p-4 shadow-lg">
+                            <div className="max-w-6xl mx-auto flex justify-between items-center">
+                                <h1 className="text-2xl font-bold">🔧 Admin: {userName}</h1>
+                                <button onClick={handleLogout} className="bg-red-500 hover:bg-red-600 px-4 py-2 rounded-lg">Sair</button>
+                            </div>
+                        </header>
+                        <main className="max-w-6xl mx-auto p-4">
+                            <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+                                <h2 className="text-2xl font-bold text-gray-800 mb-6">➕ Cadastrar Máquina</h2>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <input type="text" value={machineForm.name} onChange={(e) => setMachineForm({ ...machineForm, name: e.target.value })} placeholder="Nome da Máquina" className="px-4 py-2 border border-gray-300 rounded-lg" />
+                                    <input type="text" value={machineForm.model} onChange={(e) => setMachineForm({ ...machineForm, model: e.target.value })} placeholder="Modelo" className="px-4 py-2 border border-gray-300 rounded-lg" />
+                                    <input type="text" value={machineForm.location} onChange={(e) => setMachineForm({ ...machineForm, location: e.target.value })} placeholder="Localização" className="px-4 py-2 border border-gray-300 rounded-lg" />
+                                </div>
+                                <button onClick={addMachine} className="mt-4 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg w-full">➕ Cadastrar Máquina</button>
+                            </div>
+                            <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+                                <h2 className="text-xl font-bold text-gray-800 mb-4">🏭 Máquinas ({machines.length})</h2>
+                                {machines.length === 0 ? <p className="text-gray-500">Nenhuma máquina</p> :
+                                    <div className="space-y-2">{machines.map(m => <div key={m.id} className="bg-gray-50 p-3 rounded flex justify-between items-center"><div><p className="font-semibold">{m.name}</p><p className="text-sm text-gray-600">{m.model} - {m.location}</p></div><button onClick={() => deleteMachine(m.id)} className="text-red-600 hover:text-red-800">🗑️</button></div>)}</div>
+                                }
+                            </div>
+                            <div className="bg-white rounded-lg shadow-lg p-6">
+                                <h2 className="text-xl font-bold text-gray-800 mb-4">📊 Ordens Abertas ({orders.length})</h2>
+                                {orders.length === 0 ? <p className="text-gray-500">Nenhuma ordem</p> :
+                                    <div className="space-y-4">{orders.map(o => <div key={o.id} className="border-l-4 border-yellow-500 pl-4 py-3 bg-yellow-50 rounded"><p><strong>Máquina:</strong> {o.machineName}</p><p><strong>Operador:</strong> {o.operatorName}</p><p className="text-sm text-gray-600">{o.date} às {o.time}</p></div>)}</div>
+                                }
+                            </div>
+                        </main>
+                    </div>
+                );
+            }
+
+            // TELA DA MANUTENÇÃO
+            if (userRole === 'manutencao') {
+                return (
+                    <div className="min-h-screen bg-gray-100">
+                        <header className="bg-red-600 text-white p-4 shadow-lg">
+                            <div className="max-w-6xl mx-auto flex justify-between items-center">
+                                <h1 className="text-2xl font-bold">🛠️ Manutenção: {userName}</h1>
+                                <button onClick={handleLogout} className="bg-red-800 hover:bg-red-900 px-4 py-2 rounded-lg">Sair</button>
+                            </div>
+                        </header>
+                        <main className="max-w-6xl mx-auto p-4">
+                            <div className="bg-white rounded-lg shadow-lg p-6">
+                                <h2 className="text-2xl font-bold text-gray-800 mb-6">📋 Ordens Abertas</h2>
+                                {orders.length === 0 ? <p className="text-gray-500">Nenhuma ordem</p> :
+                                    <div className="space-y-4">{orders.map(o => <div key={o.id} className="border-l-4 border-red-500 pl-4 py-4 bg-red-50 rounded"><p><strong>Máquina:</strong> {o.machineName}</p><p><strong>Operador:</strong> {o.operatorName}</p><p><strong>Local:</strong> {o.location}</p><p><strong>Problema:</strong> {o.problem}</p><button onClick={() => deleteOrder(o.id)} className="mt-3 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded">✅ Concluída</button></div>)}</div>
+                                }
+                            </div>
+                        </main>
+                    </div>
+                );
+            }
+        }
+
+        root.render(<ServiceOrderApp />);
+    </script>
+</body>
+</html>
